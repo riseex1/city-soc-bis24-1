@@ -1,0 +1,20 @@
+{% extends 'city_base.html' %}
+{% block content %}
+<h1>Сообщить о подозрительном событии</h1>
+<form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <p><label>Категория <select name="category" required>
+    {% for key, label in categories.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+  </select></label></p>
+  <p><label>Краткое описание<br><textarea name="summary" minlength="10" maxlength="200" required></textarea></label></p>
+  <button>Отправить сообщение</button>
+</form>
+<h2>Мои сообщения</h2>
+<table>
+  <tr><th>№</th><th>Когда (UTC)</th><th>Категория</th><th>Статус</th></tr>
+  {% for r in rows %}
+  <tr><td><a href="{{ url_for('report_detail', report_id=r['id']) }}">{{ r['id'] }}</a></td>
+    <td>{{ r['created_at'][:19] }}</td><td>{{ categories[r['category']] }}</td><td>{{ statuses[r['status']] }}</td></tr>
+  {% else %}<tr><td colspan="4">Сообщений пока нет.</td></tr>{% endfor %}
+</table>
+{% endblock %}

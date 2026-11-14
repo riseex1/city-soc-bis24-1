@@ -1,0 +1,8 @@
+{% extends 'city_base.html' %}
+{% block content %}
+<h1>Моё сообщение № {{ row['id'] }}</h1>
+<p>Категория: {{ categories[row['category']] }}</p>
+<p>Статус: {{ statuses[row['status']] }}</p>
+<p>Описание: {{ row['summary'] }}</p>
+<p><a href="{{ url_for('reports') }}">К моим сообщениям</a></p>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends 'city_base.html' %}
+{% block content %}
+<h1>Журналы города</h1>
+<form method="get">
+  <label>Район <select name="district"><option value="">все</option>{% for d in districts %}<option {% if args.get('district') == d %}selected{% endif %}>{{ d }}</option>{% endfor %}</select></label>
+  <label>Событие (например, access.denied) <input name="event" value="{{ args.get('event', '') }}"></label>
+  <label>Кто (например, user:ivanov) <input name="actor" value="{{ args.get('actor', '') }}"></label>
+  <button>Показать</button>
+</form>
+<table>
+  <tr><th>Время</th><th>Район</th><th>Уровень</th><th>Событие</th><th>Кто</th><th>IP</th><th>Сообщение</th></tr>
+  {% for r in rows %}
+  <tr><td>{{ (r['ts'] or '')[:19] }}</td><td>{{ r['district'] }}</td><td>{{ r['level'] }}</td><td>{{ r['event'] }}</td><td>{{ r['actor'] or '' }}</td><td>{{ r['src_ip'] or '' }}</td><td>{{ r['msg'] }}</td></tr>
+  {% else %}<tr><td colspan="7">Записей нет.</td></tr>{% endfor %}
+</table>
+{% endblock %}

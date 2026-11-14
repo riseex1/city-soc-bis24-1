@@ -1,0 +1,19 @@
+{% extends 'city_base.html' %}
+{% block content %}
+<h1>Тревоги</h1>
+<table>
+  <tr><th>№</th><th>Когда (UTC)</th><th>Правило</th><th>Кто</th><th>Район</th><th>Событий</th><th>Статус</th></tr>
+  {% for a in alerts %}
+  <tr class="{{ 'alert-high' if a['status'] == 'open' }}">
+    <td>{{ a['id'] }}</td><td>{{ a['created_at'][:19] }}</td><td>{{ rules.get(a['rule'], a['rule']) }}</td>
+    <td><a href="{{ url_for('logs', actor=a['key']) }}">{{ a['key'] }}</a></td><td>{{ a['district'] or '—' }}</td><td>{{ a['count'] }}</td>
+    <td>{% if a['status'] == 'open' %}
+      <form method="post" action="{{ url_for('close_alert', alert_id=a['id']) }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Закрыть</button>
+      </form>{% else %}закрыта{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7">Тревог нет. Правила: {% for k, v in rules.items() %}<br>· {{ v }}{% endfor %}</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

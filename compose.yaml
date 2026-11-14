@@ -1,0 +1,31 @@
+# Район 8 — Городской SOC. Запуск: docker compose up --build -d
+# Сначала должно быть запущено ядро города (папка city-core), см. README.
+name: d8-soc
+
+services:
+  web:
+    build: .
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - data:/data           # база района (SQLite) переживает перезапуск
+    # Порт наружу НЕ публикуется: в район ходят только через Шлюз (http://soc.city.localhost:8080)
+    read_only: true          # файловая система контейнера только для чтения
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]          # без лишних привилегий ядра
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    networks:
+      city:
+        aliases: [soc]   # по этому имени Шлюз находит район
+    restart: unless-stopped
+
+networks:
+  city:
+    external: true    # общая сеть города: docker network create city
+
+volumes:
+  data: {}

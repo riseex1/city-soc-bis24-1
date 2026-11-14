@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.CITY_TITLE }}{% endblock %} · Цифровой город</title>
+  <link rel="stylesheet" href="{{ url_for('citykit.static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">{{ config.CITY_TITLE }}</a>
+  <nav>
+    {% for href, label in config.CITY_NAV %}<a href="{{ href }}">{{ label }}</a>{% endfor %}
+  </nav>
+  <div class="who">
+    {% if current_user %}
+      <span title="роли: {{ current_user.roles|join(', ') }}">{{ current_user.name or current_user.username }}</span>
+      <form method="post" action="{{ url_for('oidc.logout') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button>Выйти</button>
+      </form>
+    {% else %}
+      <a href="{{ url_for('oidc.login') }}">Войти</a>
+    {% endif %}
+  </div>
+</header>
+<main>
+  {% for message in get_flashed_messages() %}<p class="flash">{{ message }}</p>{% endfor %}
+  {% block content %}{% endblock %}
+</main>
+<footer><a href="http://city.localhost:8080/">Все районы города</a></footer>
+</body>
+</html>
