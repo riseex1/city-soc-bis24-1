@@ -98,3 +98,21 @@ def test_analyst_queue_role_and_decision_whitelist(client, app):
     assert client.post("/reports/1/review", data={"csrf_token": token, "decision": "superadmin"}).status_code == 400
     with app.app_context():
         assert get_db().execute("SELECT status FROM reports WHERE id = 1").fetchone()[0] == "new"
+
+
+def test_analyst_filters_queue_by_status(client):
+    login_as(client, "ivanov", "житель")
+    submit(client, summary="Первое сообщение для проверки")
+    submit(client, summary="Второе сообщение для проверки")
+    login_as(client, "analyst", "аналитик_soc")
+    token = csrf(client, "/reports/queue")
+    assert client.post("/reports/1/review", data={"csrf_token": token, "decision": "reviewed"}).status_code == 302
+
+    new_queue = client.get("/reports/queue?status=new").get_data(as_text=True)
+    assert "Второе сообщение для проверки" in new_queue
+    assert "Первое сообщение для проверки" not in new_queue
+
+    reviewed_queue = client.get("/reports/queue?status=reviewed").get_data(as_text=True)
+    assert "Первое сообщение для проверки" in reviewed_queue
+    assert "Второе сообщение для проверки" not in reviewed_queue
+    assert client.get("/reports/queue?status=invalid").status_code == 400
