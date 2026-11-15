@@ -1,6 +1,16 @@
 {% extends 'city_base.html' %}
 {% block content %}
 <h1>Разбор сообщений жителей</h1>
+<form method="get" action="{{ url_for('report_queue') }}">
+  <label for="status">Статус</label>
+  <select id="status" name="status">
+    <option value="">Все</option>
+    {% for value, label in statuses.items() %}
+    <option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Показать</button>
+</form>
 <table>
   <tr><th>№</th><th>Когда (UTC)</th><th>Категория</th><th>Описание</th><th>Статус и действие</th></tr>
   {% for r in rows %}

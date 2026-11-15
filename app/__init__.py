@@ -230,10 +230,15 @@ def create_app(test_config: dict | None = None):
     @app.route("/reports/queue")
     @role_required("аналитик_soc")
     def report_queue():
+        status = request.args.get("status", "").strip()
+        if status and status not in REPORT_STATUSES:
+            abort(400, "Недопустимый статус.")
+        where = " WHERE status = ?" if status else ""
         rows = get_db().execute(
-            "SELECT id, category, summary, status, created_at FROM reports ORDER BY id DESC LIMIT 100"
+            "SELECT id, category, summary, status, created_at FROM reports" + where + " ORDER BY id DESC LIMIT 100",
+            (status,) if status else (),
         ).fetchall()
-        return render_template("report_queue.html", rows=rows, categories=REPORT_CATEGORIES, statuses=REPORT_STATUSES)
+        return render_template("report_queue.html", rows=rows, categories=REPORT_CATEGORIES, statuses=REPORT_STATUSES, selected_status=status)
 
     @app.route("/reports/<int:report_id>/review", methods=("POST",))
     @role_required("аналитик_soc")
