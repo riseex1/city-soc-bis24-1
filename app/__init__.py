@@ -67,6 +67,16 @@ REPORT_STATUSES = {"new": "новое", "reviewed": "проверено", "dismi
 def create_app(test_config: dict | None = None):
     app = create_city_app(__name__, "soc", "Городской SOC", NAV, SCHEMA, test_config)
     city = app.extensions["city"]
+    def health_with_db():
+        try:
+            get_db().execute("SELECT 1").fetchone()
+        except sqlite3.Error:
+            return {"status": "error", "database": "unavailable"}, 503
+
+        return {"status": "ok", "database": "ok"}
+
+    app.view_functions["health"] = health_with_db
+
     lock = threading.Lock()
 
     def connect():
