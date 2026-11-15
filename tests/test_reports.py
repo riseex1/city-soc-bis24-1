@@ -1,5 +1,7 @@
 """Пара 5: роль, владелец, белый список и журнал для функций SOC."""
 
+import re
+
 from conftest import csrf, login_as
 from citykit import get_db
 
@@ -116,3 +118,37 @@ def test_analyst_filters_queue_by_status(client):
     assert "Первое сообщение для проверки" in reviewed_queue
     assert "Второе сообщение для проверки" not in reviewed_queue
     assert client.get("/reports/queue?status=invalid").status_code == 400
+
+
+def report_ids(client, url):
+    """Номера сообщений, которые видны в таблице «Мои сообщения» (по ссылкам на карточки)."""
+    html = client.get(url).get_data(as_text=True)
+    return set(re.findall(r'href="/reports/(\d+)"', html))
+
+
+def test_resident_filters_own_reports_by_status(client):
+    login_as(client, "petrova", "житель")
+    submit(client, summary="Сообщение Петровой, чужое")  # № 1
+    login_as(client, "ivanov", "житель")
+    submit(client, summary="Первое сообщение Иванова")  # № 2
+    submit(client, summary="Второе сообщение Иванова")  # № 3
+    submit(client, summary="Третье сообщение Иванова")  # № 4
+
+    login_as(client, "analyst", "аналитик_soc")
+    token = csrf(client, "/reports/queue")
+    assert client.post("/reports/2/review", data={"csrf_token": token, "decision": "reviewed"}).status_code == 302
+    assert client.post("/reports/3/review", data={"csrf_token": token, "decision": "dismissed"}).status_code == 302
+
+    login_as(client, "ivanov", "житель")
+    # Без фильтра и при любом статусе житель видит только свои сообщения (№ 1 — чужое).
+    assert report_ids(client, "/reports") == {"2", "3", "4"}
+    assert report_ids(client, "/reports?status=") == {"2", "3", "4"}
+    assert report_ids(client, "/reports?status=new") == {"4"}
+    assert report_ids(client, "/reports?status=reviewed") == {"2"}
+    assert report_ids(client, "/reports?status=dismissed") == {"3"}
+
+    # Недопустимый статус отклоняется, а у другого жителя фильтр не показывает чужое.
+    assert client.get("/reports?status=invalid").status_code == 400
+    login_as(client, "petrova", "житель")
+    assert report_ids(client, "/reports?status=new") == {"1"}
+    assert report_ids(client, "/reports?status=reviewed") == set()

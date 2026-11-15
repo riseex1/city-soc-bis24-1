@@ -218,11 +218,22 @@ def create_app(test_config: dict | None = None):
             # В журнале только факт: описание и прочие поля формы туда не попадают.
             log("INFO", "soc.report.created", "success", "сообщение жителя создано", details={"report_id": cur.lastrowid})
             return redirect(url_for("report_detail", report_id=cur.lastrowid))
+        # Фильтр по статусу: значение только из белого списка, владелец в условии остаётся всегда.
+        status = request.args.get("status", "").strip()
+        if status and status not in REPORT_STATUSES:
+            abort(400, "Недопустимый статус.")
+        where = " AND status = ?" if status else ""
         rows = db.execute(
-            "SELECT id, category, status, created_at FROM reports WHERE owner_sub = ? ORDER BY id DESC",
-            (owner,),
+            "SELECT id, category, status, created_at FROM reports WHERE owner_sub = ?" + where + " ORDER BY id DESC",
+            (owner, status) if status else (owner,),
         ).fetchall()
-        return render_template("reports.html", rows=rows, categories=REPORT_CATEGORIES, statuses=REPORT_STATUSES)
+        return render_template(
+            "reports.html",
+            rows=rows,
+            categories=REPORT_CATEGORIES,
+            statuses=REPORT_STATUSES,
+            selected_status=status,
+        )
 
     @app.route("/reports/<int:report_id>")
     @role_required("житель")
