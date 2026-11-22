@@ -1,0 +1,30 @@
+name: Pair 6 SOC verification
+on:
+  push:
+    branches: [pair-6-verification]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      nats:
+        image: nats:2.10-alpine
+        ports: ["4222:4222"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-dev.txt playwright
+      - run: python -m pytest -q
+      - run: |
+          mkdir submission
+          cp EVENTS.md FUNCTIONS.md submission/
+          PYTHONPATH=. python tools/pair6_session.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pair-6-SOC
+          path: submission/
+          if-no-files-found: error
