@@ -1,5 +1,6 @@
 """Проверки SOC: правила обнаружения, права, экранирование. Запуск: pytest"""
 
+from citykit.logs import now_iso
 from app.passport import KeycloakPoller, to_record
 from conftest import csrf, login_as
 
@@ -8,7 +9,7 @@ from citykit import make_event, topic_for
 
 def rec(event, actor="user:ivanov", ip="10.0.0.5", district="bank", msg="тест"):
     return {
-        "ts": "2026-10-15T10:00:00.000Z",
+        "ts": now_iso(),
         "district": district,
         "service": "web",
         "level": "WARN",
@@ -32,12 +33,12 @@ def test_pages_need_analyst_role(client):
 
 
 def test_brute_force_rule(client, bus):
-    for _ in range(4):
+    for _ in range(2):
         bus.publish("city.logs.passport", rec("auth.login.failure", district="passport"))
     assert "Перебор паролей" not in alerts_html(client).split("Правила:")[0]
     bus.publish("city.logs.passport", rec("auth.login.failure", district="passport"))
     html = alerts_html(client)
-    assert "user:ivanov" in html and "10.0.0.5" in html  # по логину и по IP
+    assert "10.0.0.5" in html
     assert any(s == "city.events.soc.incident.opened.v1" for s, _ in bus.published)
 
 
@@ -55,7 +56,10 @@ def test_grid_alarm_creates_alert(client, bus):
         "grid", "web", "city.grid.alarm.raised.v1", "meter/m-north-1", {"meter": "m-north-1", "reason": "скачок"}
     )
     bus.publish(topic_for(e["type"]), e)
+    bus.publish(topic_for(e["type"]), e)
     assert "m-north-1" in alerts_html(client)
+    assert sum(topic == "city.events.soc.alert.raised.v1" for topic, _ in bus.published) == 1
+    assert sum(p.get("event") == "foreign.event.handled" for _, p in bus.published) == 1
 
 
 def test_log_message_is_escaped(client, bus):
@@ -79,6 +83,8 @@ def test_close_alert_needs_csrf(client, bus):
     assert client.post("/alerts/1/close").status_code == 400
     token = csrf(client, "/")
     client.post("/alerts/1/close", data={"csrf_token": token})
+    client.post("/alerts/1/close", data={"csrf_token": token})
+    assert sum(topic == "city.events.soc.alert.closed.v1" for topic, _ in bus.published) == 1
     assert "закрыта" in client.get("/").get_data(as_text=True)
 
 

@@ -13,12 +13,12 @@ import threading
 
 from flask import abort, redirect, render_template, request, url_for
 
-from citykit import create_city_app, current_user, get_db, log, make_event, role_required, topic_for, valid_event
+from citykit import create_city_app, current_user, get_db, log, make_event, publish_event, role_required, topic_for, valid_event
 
 from .passport import KeycloakPoller
 
 RULES = {
-    "brute_force": "Перебор паролей: 5 и более неудачных входов за 5 минут",
+    "brute_force": "Перебор паролей: 3 и более неудачных входа с одного IP за 15 минут",
     "access_denied": "Попытки доступа к чужому: 3 и более отказа за 10 минут",
     "grid_alarm": "Тревога Энергосети: недостоверные показания или чужой счётчик",
 }
@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS alerts (
     status     TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
+CREATE TABLE IF NOT EXISTS handled_grid_events (
+    event_id TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS reports (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_sub    TEXT NOT NULL,
@@ -53,7 +56,7 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS reports_owner ON reports (owner_sub, id);
 """
 
-NAV = [("/", "Тревоги"), ("/logs", "Журналы"), ("/reports", "Мои сообщения"), ("/reports/queue", "Разбор сообщений")]
+NAV = [("/", "Тревоги"), ("/panel", "Журналы"), ("/reports", "Мои сообщения"), ("/reports/queue", "Разбор сообщений")]
 FIELDS = ("ts", "district", "service", "level", "event", "outcome", "actor", "src_ip", "request_id", "msg")
 KEEP_LOGS = 20_000
 REPORT_CATEGORIES = {
@@ -82,7 +85,7 @@ def create_app(test_config: dict | None = None):
     def connect():
         return sqlite3.connect(app.config["DATABASE"], timeout=10)
 
-    def raise_alert(con, rule: str, key: str, district: str | None, count: int) -> None:
+    def insert_alert(con, rule: str, key: str, district: str | None, count: int):
         # Одна тревога на правило и нарушителя за 10 минут — не засыпаем аналитика дублями.
         dup = con.execute(
             "SELECT 1 FROM alerts WHERE rule = ? AND key = ? AND created_at >= strftime('%Y-%m-%d %H:%M:%f', 'now', '-10 minutes')",
@@ -93,29 +96,30 @@ def create_app(test_config: dict | None = None):
         cur = con.execute(
             "INSERT INTO alerts (rule, key, district, count) VALUES (?, ?, ?, ?)", (rule, key, district, count)
         )
-        con.commit()
-        event = make_event(
-            "soc",
-            "web",
-            "city.soc.incident.opened.v1",
-            f"alert/{cur.lastrowid}",
-            {"alert_id": cur.lastrowid, "rule": rule, "district": district},
-        )
-        city["bus"].publish(topic_for(event["type"]), event)
+        return cur.lastrowid, rule, district, count
 
-    def apply_rules(con, rec: dict) -> None:
-        if rec.get("event") == "auth.login.failure":
-            for col in ("actor", "src_ip"):
-                key = rec.get(col)
-                if not key or key == "anonymous":
-                    continue
-                n = con.execute(
-                    f"SELECT COUNT(*) FROM logs WHERE event = 'auth.login.failure' AND {col} = ? "
-                    "AND received_at >= strftime('%Y-%m-%d %H:%M:%f', 'now', '-5 minutes')",
-                    (key,),
-                ).fetchone()[0]
-                if n >= 5:
-                    raise_alert(con, "brute_force", key, rec.get("district"), n)
+    def publish_raised(alert):
+        if alert is None:
+            return
+        alert_id, rule, district, count = alert
+        subject = f"alert/{alert_id}"
+        with app.app_context():
+            publish_event("city.soc.alert.raised.v1", subject,
+                          {"rule": rule, "district": district, "count": count})
+            # Сохраняем существующую тему для подписчиков предыдущей версии.
+            legacy = make_event("soc", "web", "city.soc.incident.opened.v1", subject,
+                                {"alert_id": alert_id, "rule": rule, "district": district})
+            city["bus"].publish(topic_for(legacy["type"]), legacy)
+
+    def apply_rules(con, rec: dict):
+        if rec.get("event") in ("login.failed", "auth.login.failure") and rec.get("src_ip"):
+            n = con.execute(
+                "SELECT COUNT(*) FROM logs WHERE event IN ('login.failed', 'auth.login.failure') "
+                "AND src_ip = ? AND julianday(ts) BETWEEN julianday('now', '-15 minutes') AND julianday('now')",
+                (rec["src_ip"],),
+            ).fetchone()[0]
+            if n >= 3:
+                return insert_alert(con, "brute_force", rec["src_ip"], rec.get("district"), n)
         elif rec.get("event") == "access.denied" and rec.get("actor") not in (None, "anonymous"):
             n = con.execute(
                 "SELECT COUNT(*) FROM logs WHERE event = 'access.denied' AND actor = ? "
@@ -123,7 +127,7 @@ def create_app(test_config: dict | None = None):
                 (rec["actor"],),
             ).fetchone()[0]
             if n >= 3:
-                raise_alert(con, "access_denied", rec["actor"], rec.get("district"), n)
+                return insert_alert(con, "access_denied", rec["actor"], rec.get("district"), n)
 
     def store_log(subject: str, rec: dict) -> None:
         """Запись журнала из Транспорта (другой поток)."""
@@ -139,23 +143,42 @@ def create_app(test_config: dict | None = None):
                     (*row, details),
                 )
                 con.execute("DELETE FROM logs WHERE id <= (SELECT MAX(id) FROM logs) - ?", (KEEP_LOGS,))
+                alert = apply_rules(con, rec)
                 con.commit()
-                apply_rules(con, rec)
             finally:
                 con.close()
+
+        publish_raised(alert)
 
     def on_grid_alarm(subject: str, event: dict) -> None:
-        if not valid_event(event):
+        etype = "city.grid.alarm.raised.v1"
+        if not valid_event(event) or event["type"] != etype or event["source"] != "/grid/web":
             return
-        with lock:
-            con = connect()
-            try:
-                raise_alert(con, "grid_alarm", str(event["data"].get("meter", "?"))[:60], "grid", 1)
-            finally:
-                con.close()
+        event_id = event["id"]
+        if not isinstance(event_id, str) or not 0 < len(event_id) <= 128:
+            return
+        try:
+            with lock:
+                con = connect()
+                try:
+                    with con:
+                        first = con.execute("INSERT OR IGNORE INTO handled_grid_events VALUES (?)", (event_id,)).rowcount
+                        if not first:
+                            return
+                        meter = str(event["data"].get("meter", "?"))[:60]
+                        alert = insert_alert(con, "grid_alarm", meter, "grid", 1)
+                finally:
+                    con.close()
+        except sqlite3.Error:
+            city["log"]("ERROR", "foreign.event.failed", "error", "ошибка обработки тревоги",
+                        details={"event_id": event_id})
+            raise
+        publish_raised(alert)
+        city["log"]("INFO", "foreign.event.handled", "success", "обработана тревога Энергосети",
+                    details={"event_id": event_id, "from": "grid"})
 
     city["bus"].subscribe("city.logs.>", store_log)
-    city["bus"].subscribe("city.events.grid.alarm.>", on_grid_alarm)
+    city["bus"].subscribe(topic_for("city.grid.alarm.raised.v1"), on_grid_alarm)
 
     issuer = app.config["OIDC_ISSUER"]
     if issuer and not app.config.get("TESTING"):
@@ -178,17 +201,22 @@ def create_app(test_config: dict | None = None):
     @role_required("аналитик_soc")
     def close_alert(alert_id: int):
         db = get_db()
-        if db.execute("UPDATE alerts SET status = 'closed' WHERE id = ?", (alert_id,)).rowcount != 1:
-            abort(404)
+        changed = db.execute("UPDATE alerts SET status = 'closed' WHERE id = ? AND status = 'open'", (alert_id,)).rowcount
         db.commit()
+        if not changed:
+            if db.execute("SELECT 1 FROM alerts WHERE id = ?", (alert_id,)).fetchone() is None:
+                abort(404)
+            return redirect(url_for("alerts"))
+        publish_event("city.soc.alert.closed.v1", f"alert/{alert_id}", {"status": "closed"})
         log("INFO", "data.change", "success", "тревога закрыта", details={"alert_id": alert_id})
         return redirect(url_for("alerts"))
 
     @app.route("/logs")
+    @app.route("/panel")
     @role_required("аналитик_soc")
     def logs():
         where, args = [], []
-        for col in ("district", "event", "level", "actor"):
+        for col in ("district", "event", "level", "actor", "src_ip"):
             val = request.args.get(col, "").strip()
             if val:
                 where.append(f"{col} = ?")  # имя колонки — из списка выше, значение — параметром
@@ -196,7 +224,9 @@ def create_app(test_config: dict | None = None):
         sql = "SELECT * FROM logs" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT 300"
         rows = get_db().execute(sql, args).fetchall()
         districts = [r[0] for r in get_db().execute("SELECT DISTINCT district FROM logs ORDER BY district")]
-        return render_template("logs.html", rows=rows, districts=districts, args=request.args)
+        count = get_db().execute("SELECT COUNT(*) FROM logs" + (" WHERE " + " AND ".join(where) if where else ""), args).fetchone()[0]
+        opened = get_db().execute("SELECT COUNT(*) FROM alerts WHERE status = 'open'").fetchone()[0]
+        return render_template("logs.html", rows=rows, districts=districts, args=request.args, count=count, opened=opened)
 
     @app.route("/reports", methods=("GET", "POST"))
     @role_required("житель")
